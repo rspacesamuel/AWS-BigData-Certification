@@ -1,0 +1,1090 @@
+General:
+
+Two types of IAM policies: Managed policies and Inline policies.
+Managed policy can be shared with multiple users, groups and roles.
+Inline policy is directly attached to a single user, group or role. Inline policy has a one-to-one relationship with the assignee. Helps when you create a special policy for a privileged user that nobody else should use.
+
+Public key is held by the server (AWS products) and Private key is held by the clients (that access those services).
+Public key is used to encrypt and to decrypt Private key is used.
+
+Kinesis:
+
+Kinesis Streams:
+
+Kinesis Streams manages the infrastructure for you, there is no provisioning needed.
+Streams are replicated across 3 AZs
+Data payload before encoding to base64 is called data blob
+Max size of a single data blob is 1MB
+A Record consists of Partition Key, Sequence Number and the data blob
+Default data retention of a Record is 24 hrs. It can be increased upto 7 days at a cost.
+
+Kinesis Streams can read-write data using 4 methods:
+KPL - Kinesis Producer LIbrary
+KCL - Kinesis Client Library
+Kinesis Agent
+Kinesis REST API
+
+Kinesis Streams read-rate (find out based on qn asked on discussion forum)
+Also go through links provided in Domain 2 Quiz (kinesis/dynamoDB)
+
+Shard is the base unit of throughput for a Kinesis Stream
+Shard Capacity = 1MB/s input and 2MB/s output. So if you have 2 shards your throughput is 2MB/s input and 4MB/s output (see Aggregation and Collection below)
+By default each account can add up to 10 Shards.
+Partition Key is specified by data producer to split data records between shards. If you have 2 shards you will have 2 partition keys.
+Sequence Key is used to identify individual records in each shard
+If you want to identify which records came from which shards, Sequence Key cannot be used, Partition Key is what you should use.
+Sequence key is the unique key for a data blob
+
+PutRecord() or PutRecords(), part of Kinesis API (AWS SDK) is used to add data to Kinesis streams. 
+A second way to add data to Streams is by using KPL (Kinesis Producer Library)
+Difference: API calls support many programming languages but KPL (implemented in C++) is currently only supported via Java (more language support on the way).
+PutRecord() - sends one record in one call
+PutRecords() - multiple records in in one call. This is recommended over PutRecord()
+PutRecords() will return success (HTTP status code 200) even if some records have failed. That is, it’s not atomic (whole transaction or none - isn’t the case)
+
+Kinesis Agent is a standalone software from AWS. Can be installed on webserver, db server etc. It can direct data to Streams or to Firehose. 
+Agent is open source, so you can extend it.
+Agent is durable. It can continuously monitor incoming data, handle for rotation, checkpointing and retry upon failures.
+Agent is capable of some pre-processing, like:
+Multi-line records to single-line (default behavior is to delineate  records by ‘\n’
+Convert from delimiter to JSON format
+Convert from log format to JSON format
+
+If throughput from producer exceeds the capacity of Streams, you will get ProvisionedThroughputExceeded exception. Same exception occurs when KCL reads slower than data arriving into Streams. The solution to both is to add more shards.
+Size of data blob (not the record) + Size of partition key is counted against the throughput of Streams
+
+If the the throughput is less than normal shard capacity, Aggregate (using KPL) multiple “user records” into a single “streams record” there by packing more into one. 
+Collection (as opposed to Aggregation) combines multiple Streams Records and batch them to reduce HTTP requests.
+KPL User Record = User blob (payload)
+Streams Record = blob+partition key+sequence number
+
+Many User Records → Fewer Streams Records (aggregation)
+Many such Streams Records → One PutRecords() API call over one HTTP call (collection)
+Both are together called Batching
+
+
+
+Use case for SQS vs Kinesis Streams:
+SQS:
+Prioritized Q's
+ASG webserver (produce something) -- SQS (lands here) -- ASG webserver (consumes it when it's right)
+SNS - 3 SQS Q's - 3 EC2 or another service that reads each Q for very different types of processing
+Kinesis Streams:
+Fast intake and processing
+Realtime
+Complex stream processing
+
+Kinesis Streams are used instead of SQS when (use case):
+Records should maintain the same order between different consuming applications
+Related records should be grouped-regrouped/processed-aggregated by the same node/process etc. Eg: map/reduce
+
+
+Use case for NOT using KPL:
+Records are buffered for the time set in KPL parameter RecordMaxBufferedTime. This allows asynchronous processing (KPL can immediately return success instead of delivering the record to destination and then returning success which keeps the requestor on wait). But this could cause a wait time in the overall processing (when - I think - data volume or frequency is less, the record is processed only after the parameter times out).
+But if you set RecordMaxBufferedTime too low, it could affect throughput.
+
+Kinesis Client Library (KCL) is the library for writing consumer applications that read from Shards.
+KCL has checkpoints that ensure records aren’t read twice and this is internally implemented using a DynamoDB table, which is the state table for KCL.
+Because the KCL uses the Stream Application name for the DynamoDB table name, each stream application name must be unique
+Each row in the table represents a Shard
+HashKey is the ShardId
+You could run into Provisioned Throughput Errors on the state table if:
+There are too many checkpoints
+Or, the stream has too many shards
+To resolve, add more Provisioned Throughput to the DynamoDB table
+
+Scaling up Consumer applications using KCL:
+Set up the Consumer application on an EC2 Auto scaling group
+When instances scale up due to demand, KCL will start a new Worker (see below) process for the new EC2 instance.
+Record processors are then automatically moved from overloaded instances to new instances
+Worker process is a KCL object instantiated on the consumer application EC2  instance.
+Worker maps to one or more application instances and hence one or more Record Processors.
+Record Processor is a KCL interface implemented by consumer application to process records from a single shard.
+
+Because of checkpointing if a worker (data processing node) fails KCL will reprocess. You can set this up by having KCL workers on EC2 instances in an Autoscaling group
+KCL automatically load balances
+KCL also automatically de-aggregates records aggregated by KPL
+
+Consumer applications can also be written using Kinesis API instead of KCL. But Amazon do not recommend this because KCL does a lot of heavylifting so you should use it whenever possible.
+
+
+Kinesis Connector Library Vs. KCL: Connector Library is presumably a subset of Client Library, the bigger Library for developing consumer applications - applications that consume streaming data.
+Connector Library is a Data Pipeline (ETL) for loading streaming data to other AWS services and non-AWS services. It has 4 Java interfaces to make this happen: iTransformer, iFilter, iBuffer & iEmitter.
+iEmitter of Connector Library can emit records to S3, Redshift, DynamoDB, ElasticSearch (interface for emitting to EMR has been removed after Hadoop 2.0 came out, so emit to S3 and then move to EMR if needed).
+Connector Library is also used to interface with Spark Streaming
+
+All of this that Connector Library does can be achieved through Lambda. Note that when Lambda is used, it directly reads from Streams, it do not use Connector Library’s iEmitter.
+
+Streams Management Console can be used to monitor operational and performance metrics
+Throughput of data input
+Output of Streams
+Stream-level metrics are free of charge
+Shard-level metrics are charged at CloudWatch prices
+CloudWatch can be used for detailed shard-level metrics
+
+Tagging can be used to manage resources and cost
+
+
+
+Kinesis security:
+
+In addition to default SSL encryption in Kinesis, you can chose to encrypt data sent to Kinesis Streams using SSE KMS (master key from either AWS or  provided by you). You can also do client side encryption (CSE) using your own libraries and send encrypted data to streams.
+Server side encryption (SSE) is the easiest because client-side applications (producers and consumers) need not be aware of encryption mechanisms.
+SSE KMS with AWS managed keys are free, but with customer managed key there’s a cost.
+SSE uses AES-GCM 256 algorithm
+SSE encrypts payload and partition key
+SSE is a stream-specific feature, not a shard-specific feature
+
+
+
+
+Kinesis Analytics:
+
+Point Kinesis Analytics to a stream and you can run SQL to analyze streaming data in real-time.
+The service defines differently formatted data (JSON, CSV, TSV etc.) into a fixed schema that SQL expects.
+Output of SQL is written to pre-configured location.
+Limitations:
+Records should be less than 50KB or else you should split it.
+Up to 5 Kinesis Analytics applications per region (and some more limitations)
+
+Functionality:
+Read Kinesis Streams data (or Kinesis Firehose data) using an in-application stream that acts like a table
+SQLs are run against this in-application stream
+You can split input streams into many in-application streams, run different SQLs on each in-application streams, write output of SQL into an output stream etc.
+Output stream (output of SQL) can be persisted to an outside location.
+If you want to enhance streaming data with other sources (JOIN) you can have a reference data source (for example, S3)
+
+Four destinations are directly supported for SQL output: S3, Redshift, ElasticSearch (via Firehose) and Kinesis Streams.
+Use Lambda and Kinesis Streams to write to destinations that are not directly supported.
+
+Kinesis Analytics uses KPU (Kinesis Processing Units) to measure resources. 1KPU is 4GB memory, compute (1vCPU) and networking. 
+Pricing is calculated on KPU. 
+Kinesis Analytics automatically scales KPUs based on processing needs
+To increase parallelism without adding KPUs (without increasing costs),  you can increase the number of in-application streams in Kinesis Analytics.
+
+Unlike many other AWS services, Kinesis Analytics will be charged for 1KPU if the Analytics application is running even when there is no incoming data.
+
+Kinesis Analytics vs. Kinesis Client Library:
+Use Kinesis Analytics when you want to process real time data using SQL without having to develop custom application code in other languages.
+Use KCL when you want a custom application using a programming language that KCL supports
+Kinesis Analytics internally uses KCL for instance, to do checkpointing incoming records.
+
+
+Kinesis Firehose:
+
+Kinesis Firehose is a delivery stream.
+Firehose synchronously replicates data across 3 AZs
+Firehose can deliver data by:
+creating a deliver stream, or
+have Lambda transform (T of ETL) data  and use Firehose delivery stream
+have producers send data to  Kinesis Agent which delivers the data directly
+
+Lambda transformation:
+Parameters for Transformation: 
+recordId (back and forth), 
+result (values: OK, Dropped, ProcessingFailed - only from Lambda to Firehose, 
+data payload (back and forth).
+Enable “source record backup” if you want to save a copy of data to S3 before lambda transformation.
+There are 4 Lambda transformation blueprints available:
+General Firehose processing: for custom transformation logic
+Apache Log to JSON
+Apache Log to CSV
+Syslog to CSV
+
+Kinesis Firehose can only directly deliver to: Redshift, S3, ElasticSearch
+
+Firehose only supports GZIP, ZIP, SNAPPY for compression.
+To load compressed data to Redshift it must be GZIP.
+CloudWatch Logs are already compressed in GZIP. So if you stream CloudWatch Logs to Firehose, remember to disable Firehose compression to avoid double-compression.
+Firehose limitations:
+
+Max size of record before base-64 encoding = 1000KB
+The API calls  to create/delete/describe delivery stream can handle up to 5 transactions per sec
+However each delivery stream can handle up to 2000 transactions/sec, 5000 records/sec, 5MB/sec
+Each account gets up to 20 delivery streams by default
+Each delivery stream store data up to 24 hours if destination is unavailable
+There are 3 ways to write to Firehose deliver stream:
+PutRecordBatch() can take up to 500 records per call or 4MB per call whichever is smaller.
+PutRecord() can only take one record per call
+Kinesis Agent
+It’s possible that in rare instances duplicate data records are delivered. (for example, when a previous delivery attempt timed out, a new record was then delivered, and the time-out was later successful)
+
+A single Firehose delivery stream can only deliver to:
+single S3 bucket
+single Redshift cluster
+single ElasticSearch domain
+You need multiple delivery streams to deliver to duplicate destinations.
+
+Buffer size is between 1MB to 128MB (for S3 destination) and 1MB to 100MB (for Elastic Search destination)
+Buffer interval is 60s - 900s. 
+Buffer is flushed to destination when one of this is satisfied (whichever happens first) - size or interval. You have to set a default for both (5MB and 300s) when configuring Firehose.
+Firehose will raise the buffer size dynamically at runtime.
+Note that above buffer size is applied before compression if compression was enabled. So buffer could be evicted before it's full if data is compressed.
+
+To write to Redshift, user needs to have Redshift INSERT privilege.
+If Redshift is inside a VPC, Firehose CIDR IP (which is constant per Region) should be unblocked at Redshift VPC.
+Also for Redshift destination, the data is written to S3 first and then COPY command is used to load data to Redshift.
+
+Firehose delivery failure:
+To S3:
+Firehose retries delivery for up to 24 hrs and retries every 5 sec
+Discards data after 24 hrs
+To Redshift:
+If S3 copy fails, above S3 steps apply. From S3 to Redshift:
+Firehose retries delivery every 5 minutes for up to 60 minutes. 
+After 60 minutes, Redshift continues with the next batch of records that are ready for COPY and failed records are written to a manifest file in S3 folder errors. Manifest file is used to manually backfill records to Redshift.
+To Elasticsearch: 
+You can specify a retry duration between 0s and 7200s (2 hrs)
+After retrial Firehose skips the current batch and moves on to next batch of data.
+Details of skipped batch is saved to S3 folder elasticsearch_failed that can be used to manually backfill.
+Lambda Transformation errors:
+If it’s a systemic lambda error (network timeout, lambda invocation limit etc.), Firehose retires thrice and skips that batch of records
+You can also write the error to Cloudwatch logs
+Lambda returns a “ProcessingFailed” result, Firehose stores those records in S3 folder processing_failed
+
+Firehose billing:
+
+Firehose is charged only for usage (data volume ingested)
+Data volume ingested is rounded up to 5KB for billing purposes
+Data volume ingested is calculated on a per-record basis, not on a per-API call basis. If one PutRecordBatch() contains a 1KB record and a 2 KB record, it’s considered to be two 5KB records for the purpose of billing.
+Usage of S3, Redshift, ElasticSearch and Lambda are calculated separately and will be charged on top of Firehose charges.
+
+
+
+Glacier:
+
+Vault Lock feature of Glacier is useful for regulatory purposes where documents must not be altered in any form or deleted.
+Initiate Vault Lock → Attach Vault Lock Policy to Vault → Lock in In-Progress and LockID returned → Validate Lock in 24 hrs (or it will expire) → Vault locked (immutable at this point).
+Vault Lock Controls (mentioned in the IAM policy document):
+	Time based (Eg: Lock it for 365 days)
+	Undeletable
+	Or, Both.
+
+
+IoT:
+
+
+AWS IoT SDK protocols : MQTT, HTTP, WebSockets Protocol
+Each connected device require X.509 Certificate (3 certificate types: One-click certification generates public and pvt keys, Upload own certificate if you have your own pvt key called Certificate Signing Request/CSR, Use your own CA certificates)
+Certificate must be installed on the device to be connected to AWS.
+IoT uses IAM policies for users,groups, roles (for example to write to Redshift)
+Cognito for access from Mobile devices
+Cognito can work with other Authentication providers(Google, Amazon, Facebook etc.)
+
+Device Gateway or Message Broker maintains session and subscriptions for all connected devices
+It uses a topic to send messages from publishing client to subscribing client
+Device Gateway scales automatically to a billion devices
+
+Device Registry is a central repository for all things (devices) - has name and attributes of all things.
+
+Device Shadow is a channel to send commands to a thing and stores the last known status of a thing.
+
+Rules Engine has rules with SQL-like syntax.
+Rules are used to transform messages and send messages to other AWS services via Rule Action. For example you can read from a file and set the Rule Action to write to DynamoDB table, Kinesis Firehose, Kinesis Streams, Lambda, Machine Learning, S3, SNS, SQS, ElasticSearch, CloudWatch
+
+
+Data Pipeline:
+
+Used for moving data across AWS Services and across Regions if need be.
+A lot of pipeline functions can be achieved via Lambda too.
+Pipelines are internally run on EMR clusters or EC2 instances
+Data Pipeline can be run on-premise. To make this happen, install a Task Runner package. AWS Data Pipeline will poll the Task Runner for any tasks to be run on-premise (like executing an SP).
+
+Pipeline components:
+Datanode: end destination for your data. Eg: RedshiftDataNode, SQLDataNode, S3DataNode
+Activity: An action that’s performed by Pipeline. Eg: CopyActivity, EMRActivity, ShellCommandActivity, PigActivity etc.
+Precondition: A readiness check. This is optional. Eg: DynamoDBDataExists, DynamoDBTableExists, S3KeyExists, SellCommandPrecondition etc.
+Schedules: When to run
+
+
+DynamoDB:
+
+Performance requirements are specified on a table-level.
+Eventually consistent reads by default
+WCU (Write Capacity Units) = No. of 1KB blocks per second
+500 byte writes = 1 WCU
+2024 byte writes = 2 WCU
+RCU (Read Capacity Unites) = No. of 4KB blocks per second, for 1 strongly consistent read or 2 eventually consistent reads
+2 KB reads = 1 RCU
+8KB reads = 2 RCU if consistent read, 1 RCU if eventually consistent read
+Billing is based on number of WCU and RCU
+Eventually Consistent Reads by default. You can configure it to be Strongly Consistent Reads.
+
+Most CloudWatch Metrics on DynamoDB are reported in 1-minute intervals, others are reported in 5-minute intervals.
+
+DynamoDB TTL is a mechanism to set a specific timestamp on a data item, such that when the timestamp expires, DynamoDB marks the item as expired and later deletes it (usually within 2 days).
+This is a good purge mechanism (use case)
+If there is a secondary index on the expired column, indexes are deleted like a normal delete operation.
+DynamoDB Streams will record a TTL purge as a normal delete operation (but it’s distinguishable from normal deletes).
+
+Partition Key also called Hash Key is used to uniquely identify an item (or a record)
+Sort Key also called Range Key is used for sorting within each Partition (For example, Song table with Artist as Partition Key and SongTitle as Sort Key)
+Primary key uniquely identifies an item in the table. It's either the Partition Key or a combination of Partition Key + Sort Key
+Primary Key must be unique. PK is the key of key-value store. Attributes are the value. So items in a table can have different attributes or different number of attributes. PK is the only mandatory field.
+This schema-less structure helps create Sparse Indexes (LSI and GSI, see below).
+
+Only scalar data types can be used for PartitionKey (String, Number, Binary. Is Boolean which is a scalar data type allowed as well? Boolean is allowed for secondary index keys though)
+Each Partition has at most 10GB, 3000 RCU and 1000 WCU.
+If Partition P exceeds 10GB, P1 and P2 are automatically created Items and throughout evenly distributed. And P is deallocated. Table will be fully available for read/write during this entire process.
+Partition Split occur when:
+Provisioned throughput settings are increased
+Storage requirements increase
+Partition count stay the same even if throughput/storage decrease (won't decrease).
+RCU/WCU has to be comprehended at Partition level not at table level.
+
+DynamoDB cross-region replication allows us to replicate a table across multiple regions.
+You can have as many number of replicas as possible.
+An EC2 instance is provisioned to run the replication application/replication library.
+Replicas can be in the same region as long as replica table name is different from master table name.
+
+An item (record) should be less than 400 KB in size. This includes attribute names as well. That is, binary size (utf-8) of (attribute name+data value) should be < 400KB
+
+There are standard datatypes (string, binary etc.) and there are DynamoDB datatypes (documents implemented as list/map, set implemented as array)
+
+Hive on EMR is an effective way to Query large amounts of data on DynamoDB. You configure Data Pipeline to launch EMR clusters. This is can be all triggered from Lambda.
+
+Tagging of DynamoDB tables is an efficient of way tracking AWS costs across projects.
+Tags on tables will automatically be applied to secondary indexes.
+DynamoDB Streams usage cannot be tagged (at present)
+
+DynamoDB Streams is a time ordered series of events (puts, updates, deletes) that happen on a DynamoDB table for the last 24 hrs.
+DynamoDB Streams + Lambda = Database Triggers
+Major application of Triggers is Cross-Region Replication (see replication above)
+Streams have to be enabled on a per-table basis.
+Capacity of Streams is automatically managed, no RCU/WCU worries.
+DynamoDB Streams offer 4 different views as below. You specify this in the CreateTable API call (for new tables) or in the UpdateTable API call (for old tables) as a ViewType. 
+Keys Only
+New Image (whole item)
+Old Image (whole item)
+New and Old Image (whole item)
+Some use cases of DynamoDB Streams:
+If you have a multi-master topology (the main table that’s not a read replica is called master - see replication), Streams API can be used propagate item level updates to remote masters
+Notifications to other applications based on item level updates (a user uploads a picture)
+Update Redshift data in real-time based on DynamoDB table updates.
+
+Secondary Indexes:
+Local Secondary Indexes on a table cannot be created after table creation.
+Provisioned throughput of a table (RCU and WCU) apply on a LSI too. It does not apply on Global Secondary Indexes. GSI’s have their own separate provisioning for throughput (again RCU and WCU).
+
+Local and Global Secondary Indexes (LSI/GSI):
+
+Secondary Indexes are explicitly accessed by the request unlike RDBMS. In RDBMS, the optimizer decides whether or not to use an Index for a request.
+Indexes can be scanned or queried just like the underlying DynamoDB table.
+Scan operation involves full index scan (reads all data). Query operation involves reading a filtered subset.
+
+Non-key attributes in a secondary index are called Projected attributes
+Composite attribute indexes are not possible, although you can combine two attributes into a string and use it as the key (as the sort key in the case of LSI, because partition key is already defined)
+Possible attribute data types for indexing are String, Number, Binary & Boolean - all the scalar data types.
+
+LSI:
+LSI should be created with the table creation, can’t be created or deleted after.
+LSI by default contains the same Partition Key as the table it represents. The Sort Key can be same as the table or a different column. You can add a third (or more) attribute from the table (called Projection). But FAQ says LSI should have 3 attributes minimum: Table partition key, Index sort key, Table sort key.???
+
+With LSI, you can request for Strong consistency OR Eventual consistency.
+LSI shares RCU and WCU with the table
+LSI is a sparse index. Only items (records) having the indexed column present on them will have an entry in LSI.
+Projecting ALL attributes (ALL keyword) is only helpful when (use case) you want all the items in, for example, a different sort order (could be inefficient due to shared RCU/WCU). Note that  a max of 20 attributes can be projected.
+Projection should be minimized but minimize wisely - a WCU is 1KB. If an item is only 200 bytes, DynamoDB will round WCU up to 1KB anyway. Similarly for RCU.
+
+LSI and underlying table are located on the same Partition, and that ensues, ONE:
+
+If requested attributes are not in LSI, it will be fetched from table. This is made possible by the fact that LSI calls require Partition Key to be specified and that LSI and table are colocated.
+And TWO:
+For a given partition key value (say AcctID=100), the size of all items in table and in index combined cannot go more than 10 GB due to colocation. All such items having one partition value in table and local index together are called Item Collection.
+And THREE:
+LSI can allow requests for Strong Consistency due to colocation, but GSI can't.
+
+Max 5 LSI on a table.
+Max of 20 attributes can be projected to LSI across all 5 LSIs (2x5=10 more if you count keys)
+
+GSI:
+You can use GSI as read replica (use case) at the cost of write propagation delay. To do this with LSI, you’d have to share RCU/WCU with it. GSI has to have it’s own RCU/LCU.
+Unlike PK on table GSI doesn't require indexed attributes to be unique.
+Unlike PK on table, GSI key attribute do not have to be present in all items. It will just be sparse if it’s not present on all items. That would be a use case where you want to use GSI for only those items with the GSI key present.
+Unlike LSI, GSI cannot retrieve table attributes that are not part of GSI by looking back at table. Even the Scan operation doesn’t fetch attributes that are not projected onto GSI.
+GSI do not need to have a sort key (it’s optional).
+
+DynamoDB Accelerator (DAX) is a caching mechanism for read intensive applications.
+Writes are write-through, that is written to DynamoDB first and then updated on DAX.
+Only change on the application is:
+Download DAX SDK
+Rebuild application to use DAX Client instead of DynamoDB client
+Point DAX client to DAX endpoint
+Cache eviction is done by TTL specified by user and by an internal LRU when space becomes unavailable.
+DAX runs on EC2
+It’s multi AZ
+And is fault tolerant (if primary DAX node fails, its restored from replicas)
+Use cases are any applications needing fast-response - real time bidding, social gaming, trading, cost-effectiveness (by having DAX instead of RCU increase for unexpected sharp spikes), diverting intensive read traffic on a table/tables by an application so other applications don’t see latency on that table.
+DynamoDB read calls:
+
+BatchGetItem() is used for bulk reads. Works only on tables.
+Query() works on tables and secondary indexes. In Query(), if you have filters, it’s applied server side so that your application don’t have to do it.
+
+To efficiently return a single item, if you know Partition key and Sort key (if one exists), use GetItem()
+To return a bunch of items in bulk by specifying partition key/sort key, use BatchGetItem().
+If you have only partial information then you have to Scan() or Query()
+Query() is more efficient than Scan() because Query() mentions a partition key/sort key and filter conditions if any.
+To fetch a large number of items within the same partition key (I think this is partition, not the partition key value), Query() is more efficient than GetItem() or BatchGetItem()
+To fetch a considerable amount of items from the table, use Scan()
+
+
+
+
+EMR/Hadoop:
+
+EMR is single AZ
+Runs as a cluster of EC2 instances
+
+EBS on EMR:
+
+EBS can be used on EMR if the default storage that comes with EC2 (instance store) is not enough (use case).
+EBS connected to EMR (instead of using instance store) has the drawback of being non-persistent storage just like default instance store (unlike normal non-EMR EC2 instances).
+When Cluster goes off, data on EBS dies. The solution is EMRFS to store data on S3.
+EMRFS extends HDFS to access S3
+EMRFS can also have connections from multiple clusters onto it.
+EMR Resource Allocation and Scheduling of HDFS is done using YARN (Hadoop standard).
+
+EBS limitations on EMR:
+
+Non-persistent storage
+EBS cannot be attached to a running EMR cluster.
+EBS cannot be removed from a running cluster, if you do so, it's considered a Node failure. EMR will replace both node and EBS volume in that case.
+EBS can be snapshotted but you can't restore from a snapshot
+You can't use encrypted EBS on EMR.
+EMR currently run only on Debian or Squeeze OS’s (same FAQ page also says it only runs on Debian or Lenny)
+
+Bootstrap Actions is used to run any start-up scripts. Store the scripts in S3 and specify the location in Bootstrap Actions.
+Data not stored in S3 will be lost on EMR cluster termination.
+
+Processing compressed files on EMR:
+GZIP can’t be split, so keep the size below 2GB for GZIP files.
+BZIP2 has very high compression and is splittable (but slower decompression time).
+Memorize the table in EMR File Storage and Compression 02:05
+
+Consistency View: A way to check if objects written to or read from S3 by EMRFS are consistent (due to S3’s eventual consistency model). If inconsistency is detected, a retry is applied. This is achieved by saving EMRFS Metadata in DynamoDB.
+
+EMR cluster is single master node. This is why it is single AZ. 
+If you run EMR cluster in a private subnet you need to create a “VPC endpoint for S3” for EMR to access S3
+When creating tags, create through EMR console only, not through EC2 console. Otherwise it won’t be tagged across to the EMR Cluster.
+ClusterID in EMR is known as JobFlowID in CloudWatch Metrics page (same thing)
+Click “Debug” to track Steps, jobs, tasks etc. To make this happen, Enable Debugging Flag should be set while creating cluster.
+EMR Master and Slaves are in two separate Security Groups. Master security group allows you to SSH into it, but Slaves’ security group can only be contacted via Master. (SSH to Master and then SSH to Slave).
+EMR always send data from EC2 to S3 via HTTPS
+User data from S3 is read into EC2 using S3N protocol.
+
+
+Core Nodes hold data on HDFS and they can also do processing. They are optional but are usually present in a cluster.
+Task Nodes are only for processing (no data storage) and are optional too.
+When a cluster is running, Core Nodes can be increased, and Task Nodes can be increased or decreased.
+Estimate no. of Core Nodes=Expected data size * 3 replication factor / (size of the Node type you're selecting * .6 because use only 60% for data and leave rest for intermediate processing).
+AWS can't recover Master Node failure, although checkpointing can be enabled to resume cluster from last checkpoint. If no checkpointing, a new cluster has to be started and job resubmitted.
+AWS is fault tolerant for Slave Nodes (Core and Task). This does not apply if all Nodes in cluster fails - if all nodes fail it’s a cluster failure.
+EMR stores state information about Hadoop jobs, task attempts etc. in SimpleDB. If you want to debug (by enabling the Flag on cluster creation), you should subscribe to SimpleDB. Without subscription you can still see cluster steps, step logs etc. but not Hadoop job status.
+
+Cluster is terminated automatically after the Steps are executed. If you want to persist cluster for continual tasks, enable Manual Termination setting.
+
+Upto 10 Tags can be added to an active EMR cluster and that will propagate to each EC2 instance inside the cluster that's not terminated. Removing tags will remove it from all EC2 instances.
+If you’re using IAM policies, make sure permission is granted to use EC2 Tagging APIs.
+Adding tags to EC2 instances directly is not recommended
+You can organize billing by tags.
+
+EMR Connector to Kinesis can be used to query and read from Kinesis Streams (for example, you can run HiveQL on EMR to read Streams using SQL)
+Since Hadoop is batch oriented and Streams are real time, data read from Streams are divided up into small batches called iterations.
+Metadata for Iterations are stored in DynamoDB and you must provision this DynamoDB table
+EMR Connector to Kinesis can only read from Streams, no writing back to Kinesis (that is, EMR Connector cannot act as a Kinesis Producer).
+Read throughput of EMR Kinesis Connector depends on two factors - EC2 instance size of EMR and record size in Streams.
+
+
+
+Hue:
+
+LDAP authentication can be set up for Hue login by editing the MasterNode:/etc/hue/conf/hue.ini
+The best practice is to store this as a JSON file in S3, instead of as an ini file in MasterNode (AWS has a sample JSON). You can specify either JSON or Config file while creating Cluster.
+Presto can be connected to a cluster using the same JSON method.
+
+Hive:
+
+You can query from and Insert data into a DynamoDB table using Hive by way of an external table in Hive (mapping table). You cannot create table, delete data or update data to DynamoDB table using Hive.
+External table is also how you access data in S3 (and share data with other resourcs).
+Hive Cluster has interactive mode and batch mode. Interactive mode is used for development activities or minor queries. Batch mode is used to repetitively run reports etc.
+Hive does not support:
+Concurrently writing to a single table (from two clusters, for example)
+Reading from a table that’s being written to (it shows non-deterministic behaviour)
+
+
+Presto:
+
+Query processing engine with connectors to different types of data sources. You can query RDBMS, NoSQL, Hive, Streaming data etc.
+Does in-memory processing. So very large queries and joins (100M+ records) may not be efficient. Use Hive instead
+So Presto is more suited for “interactive analytics” rather than large “batch processing”.
+Presto is not a database.
+Not suited for OLTP workload
+
+Spark:
+(Read Resources listed on “Spark on EMR Part 2” video. And do QwikLabs)
+Widely used due to performance gains over mapreduce, and gains are due to:
+In-memory processing
+RDD (Resilient Distributed Dataset) that keeps data lineage instead of replication for fault tolerance
+Use cases: 
+Interactive queries (faster than Hive)
+Live query on streaming data (Eg: query click streaming of a customer’s current session)
+Machine Learning
+Data Integration/ETL
+Graph processing
+Not suited for:
+ OLTP
+very large batch processing
+memory intensive queries
+concurrent user memory intensive queries
+Can run standalone without Hadoop, you just need a shared file system
+
+Spark applications run as independent sets of processes on a cluster, coordinated by SparkContext object in the main program (main program is called driver program).
+Each application will have a separate instance of SparkContext object. Each application has executor process (on worker nodes) that runs on its on JVM, so there is no data sharing between applications.
+Spark connects to Cluster Manager for distributed resource management and Cluster Manager can be Spark’s own cluster manager or YARN or Mesos.
+
+Spark and Redshift integration is made possible by a library from DataBricks. Data flow happens like this:
+Redshift → (via UNLOAD command) → S3 → Generate Spark SQL DataFrame → DataFrame is registered as a temp table in Spark → SQL queries are ran against this.
+Spark-Redshift library can work with S3, Hive, Parquet files or HDFS.
+
+Because Spark is Hive compatible (Spark can access Hive Metastore), tables (Managed or External) created in Hive is accessible to Spark automatically.
+
+
+Lambda:
+
+Function as a service/Serverless computing.
+Lets you run code in response to events - trigger based (for instance, do something when an object arrives in S3)
+Code is saved on S3 and encrypted at rest.
+Billed for milliseconds of usage
+
+Persistence is your responsibility (because it’s stateless).
+Statelessness helps AWS launch as many instances of a lambda function as possible very quickly.
+Your code can persist state onto S3/DynamoDB/other web based storage.
+
+Deployment:
+AWS SAM (Serverless Application Model) prescribes rules for specific Serverless apps.
+These are natively available in CloudFormation as “Serverless resources”.
+When you download one of the 4 blueprints to begin lambda development, AWS SAM file is also included so that you can easily deploy the fully developed blueprint.
+Deployment is automated using CodePipeline, a continuous delivery stream.
+
+Coordinate calls between multiple lambda functions using AWS Step Functions.
+Troubleshoot Lambda function by enabling tracing through AWS X-Ray
+
+Lambda@Edge:
+Invoke lambda functions globally in response to the 4 CloudFront requests:
+Viewer Request
+Viewer Response
+Origin Request
+Origin Response
+Use case of Edge is for a low latency application that's geographically spread and that uses CloudFront. Lambda functions will be spread out to edge locations. 
+
+Throttling, errors etc.:
+Lambda throttling error code: 429
+Throttling limits are calculated on account-level not at function-level
+On function failure, the function is retried if it was an asynchronous invocation (random event based).If a DLQ (Dead Letter Queue) was configured, events will be placed there. This is either an SQS queue or SNS topic.
+On function failure of synchronous invocations (stream based) an exception is returned.
+
+Access:
+Two ways: Lambda function polls AWS resources for events, or AWS resources send events to Lambda - both are configured through IAM Roles.
+All such resources should be in the same VPC as the Lambda function. Different subnets within that VPC is totally possible.
+To access resources outside of VPC the function has to go through VPC peering.
+To access an Internet resource, a NAT instance must be configured to access external endpoint.
+
+Lambda Use cases:
+Event driven processing
+Serverless mapreduce/computing
+A Lambda function’s default max disk capacity (/tmp space) = 500 MB
+Max. no. of processes and threads = 1024
+Max. execution time = 300s (5 mins)
+Read resources listed in “Lambda in the AWS Big Data ecosystem”
+
+
+ElasticSearch:
+
+ES domain consists of ES clusters.
+ES clusters consists of compute and storage resources that you specify.
+To migrate existing ES to new domain, create a snapshot and save it in S3, then load snapshot to new ES domain using APIs.
+ES is charged from instance launch through instance termination on hourly calculation.
+
+
+Redshift:
+
+Single AZ
+Distribution style = how rows are distributed into each Slices
+Cluster = Many nodes (1 Leader + Many Compute)
+Each Node = Many slices
+Each slice get a portion of compute node’s memory and disk.
+A cluster can have more than one Redshift database.
+UserId 1 = rdsdb = internal user. So metadata queries involving tables with UserId as a column usually says WHERE UserId > 1.
+
+3 Distribution styles = Even, All, Key
+Even is the default Distribution style (round robin fashion regardless of column values)
+Key based distribution (helps joins - same keys in same slice) via hashing
+All distribution distributes entire data to the first slice on each node. Used for lookup references (very small), when data is not changing etc.
+Redshift block size = 1 MB
+Zone Map track min and max values for each block.
+When you specify a Sort Key on a table, records are sorted inside each block. This optimizes queries needing sort order (on the same column as sort key) by having to just look at zone map (block boundaries, so blocks that don’t meet the filter criteria can be entirely skipped) instead of reading record-by-record inside each block. 
+Zone map uses only first 8 bytes of column (so if your column value is a URL like https:// optimizations due to zone map won't happen much)
+So is the case when query uses functions or casting. Implicit casting will skip the zone map too (column is datetime but WHERE clause says dtColumn=’2017-08-04’)
+Avoiding these will trigger range-restricted scans utilizing Zone Maps.
+Filtering of data is optimized using sort key and zone map, whereas in other databases it's optimized using Indexes.
+
+
+Blocks themselves may not be sorted within a slice. This could slow down above mentioned fetching. (vacuuming is the solution).
+Two types of sort keys:
+Compound (default)
+Interleaved
+Good design: In compound sort key, if the first key has high cardinality (relatively unique) then adding more columns to sort key has little performance gain and only adds to overhead.
+CHAR/VARCHAR is declared in bytes not in number of characters. VARCHAR(12) can contain 12 1-byte characters, or 6 2-byte characters or 4 3-byte characters or 3 4-byte characters.
+CHAR/NCHAR max is 4096 bytes
+VARCHAR/NVARCHAR max is 65,535 bytes
+TEXT max is 260 bytes
+
+Though VARCHAR columns bigger than actual data won’t consume extra space in table:
+When queries have to fetch huge amounts of data they may have to be stored intermediately in tmp tables and the allocated size of those will be based on the declaration (not actual data size) and this inflates storage needs (for example while doing intermediate sorts) and kills performance.
+
+COPY command will automatically choose compression schemes when loading a table for the first time. To turn this behaviour off, add COMPUDATE OFF in COPY command.
+If you want to turn on compression later run:
+ANALYZE COMPRESSION <table_name>;
+This command will list recommended compression algorithms for each column of the table. Then you have to manually update the DDL with those algorithms and re-create table and then reload data.
+
+Constraints that can be created but NOT enforced:
+PK
+FK
+REFERENCES
+UNIQUE KEY
+
+Only Constraint that’s enforced:
+NULL/NOT NULL
+
+Limits:
+Max 500 user connections
+Concurrency for all user-defined queues: 50 (50 concurrent queries from at most 500 users)
+Upto 8 user-defined queue
+1 superuser queue
+Default concurrency per queue: 5 (5 queries per queue at the same time)
+Queues (query groups and/or user groups) are defined through WLM tool on Console, by defining a new Parameter Group.
+Use case: WLM helps allocate resources to smaller fast queries so they don’t wait too much for big queries.
+Queue allocation can be done in WLM (through Parameter Groups) for either UserGroups (allocate 30% resources for any users in a group) or QueryGroups (allocate 70% resources to queries that are assigned by the user to a particular QueryGroup while running from an SQL client).
+UserGroup can be set on WLM parameter group with a wildcard setting (Example: Use *Analyst* to set 30% resources for all user groups having “Analyst” in their user group name)
+Adding a UserGroup or QueryGroup (or Wildcard for either of those) in WLM for resource allocation requires a Redshift Cluster Reboot (adding groups is static).
+But changing allocation percentages, concurrency (how many users/queries at a time) and timeout (don’t run a query for more than x seconds) don’t need a reboot (dynamic).
+Default Parameter Group cannot be altered. Above steps are done on a new parameter group.
+All other queries go to a Default Queue.
+Query hopping happens when timeout occurs in one queue and query is switched to the previous queue it belonged to or another queue.
+
+Use case: WLM helps allocate resources to queries overwhelmed by bigger queries or to queries that run low on resources (QueryGroup)
+Use case: If users from a department or some executives have to be allocated say at least 30% resources whenever they run a query, this can be used (UserGroup)
+Prioritization is thus Queue based not individual Query based.
+
+Data Loading into Redshift:
+
+S3, DynamoDB, EC2, EMR, or any SSH enabled host has direct integration to Redshift (you can use COPY command to load).
+Kinesis, Database Migration Service, Lambda etc. has to stage data in S3 before loading to Redshift.
+If you’re loading a large amount of data over the Internet (migrating on-premise DWH to AWS) use one of these:
+import/export or Snowball
+AWS DirectConnect
+
+Loading from S3 is the fastest.
+COPY command do not need S3 endpoint URL, just ‘S3://my-bucket-name/filename.tbl’
+If you split the above S3 data file into n parts, filename.tbl.001...filename.tbl.n, the COPY command do not have to change. It will automatically detect and read the splits unless the original big file is still there.
+No. of split files should be equal to or be a multiple of no. of slices. For ex, 4 slices = 4 file splits or 8 file splits etc.
+Stv_slices system table has information about number of slices
+Another way to speed up data load is to compress large files - allowed formats: gzip, lzop, bzip2
+
+Reshift node types:
+Dense Storage:
+ds2.xlarge -  2 slices/node
+ds2.8xlarge - 16 slices/node
+Dense Compute:
+dc1.large - 2 slices/node
+dc1.8xlarge - 32 slices/node
+
+dc1 = High I/O = SSD = Less storage per Node (dense compute)
+ds2 = Huge data = HDD = More storage per Node (dense storage)
+
+
+To copy from DynamoDB to Redshift:
+COPY orders FROM ‘dynamodb://customerorders’ credentials ‘<aws-creds>’ readratio 50;
+Read ratio is the DynamoDB RCU allocated to COPY process, expressed in percentage.
+It’s a good practice in Production to make a copy of DynamoDB table to copy from, if requested readratio is big.
+
+To copy from an EC2 remote host:
+COPY sales FROM ‘s3://my-config-bucket/ssh_manifest.cfg’ credentials ‘<aws-cred>’ ssh;
+The manifest file kept in S3 has details of how to SSH into EC2 (username, password, endpoint etc). 
+
+COPY command can have it’s own manifest file (different from above ssh manifest) in order to choose which files to load out of the multitude of input files. Manifest can also pick files from different S3 buckets for the same COPY operation.
+COPY SalesFact FROM ‘s3://my-config-bucket/lineitem.manifest’ CREDENTIALS ‘<arn-role-...>’ MANIFEST;
+
+STL = System Logs. Data from log files persisted on disks
+STV = System Virtual. Transient data from in memory structures that are not persisted.
+SVV = Views on STV
+SVL = Views on STL
+
+To check data load errors:
+STL_LOAD_ERRORS
+STL_LOADERROR_DETAIL
+
+Redshift do not support UPSERT/MERGE. Do DELETE/INSERT/UPDATE in sequential steps.
+
+Loading encrypted files:
+
+COPY automatically detects and loads files encrypted with below schemes:
+SSE-S3  (server side encryption with s3 managed keys)
+SSE-KMS (server side encryption with kms managed keys)
+Eg: COPY CustomerDimension FROM ‘s3://my-bucket/encrypted/cust.txt’ IAM_ROLE ‘arn:aws:iam::1234:role/myRedshiftRole’ MASTER_SYMMTERIC_KEY = ‘<master_key>’ ENCRYPTED DELIMITER ‘|’
+
+COPY does not support below encryption schemes:
+SSE-C (server side encryption with customer provided keys)
+Client Side encryptions
+
+UNLOAD command unloads file to S3 in SSE-S3 encrypted format by default:
+UNLOAD (select * from customerfact) TO (s3://my-bucket/filenamePrefix_) IAM_ROLE ‘arn:aws:iam::1234:role/MyRedShiftRole’;
+
+Add this at the end to UNLOAD to S3 as SSE-KMS encrypted:
+KMS_KEY_ID ‘keyvalue’ ENCRYPTED;
+
+UNLOAD supports below encryption schemes:
+SSE-S3 (this is the default scheme and uses AES-256)
+SSE-KMS
+CSE-CMK (client side encryption with customer managed key)
+UNLOAD does not support:
+SSE-C (server side encryption using a customer managed key)
+
+When launching cluster (while configuring):
+To increase speed between S3 and Redshift Cluster set the property “Enhanced VPC Routing” to True. This uses S3 global endpoints (Edge Locations).
+Good idea to select a Role, so that S3 access is possible through a Role as opposed to via an AccessKey/SecretKey combination that has to be saved on the Cluster master node.
+
+Best practice: Select a node that will have at least 2 - 2.5 times the size of your largest table as free space (memorize the table for ds2/dc2 storage nodes in documentation)
+
+Resizing Cluster:
+
+A new cluster is created and data is copied over. The DNS endpoint of source is copied to target cluster and the source will be decommissioned. While this happens:
+Source cluster is restarted
+Only read-only connections
+When target is ready, decommission the source cluster.
+
+VACUUM:
+
+RedShift blocks are immutable.
+Deletes are not deleted. Updates are written in new blocks. This degrades performance (lost sort order, more scan time) and increases storage over time. VACUUM is the solution.
+
+VACUUM FULL;
+VACUUM FULL <TableName>;
+
+VACUUM SORT ONLY;
+VACUUM DELETE ONLY;
+VACUUM REINDEX <InterleavedTableName>;
+
+Do deep copy instead of VACUUM if table is too large (700GB+) and/or hasn’t been VACUUMed in a long time. Three methods to do deep copy:
+	CREATE new_table <specify_original_ddl_params>; INSERT INTO .. AS (SELECT * FROM ..);
+	CREATE new_table AS (SELECT * FROM ..);
+	CREATE new_table (LIKE old_table); INSERT INTO .. AS (SELECT * FROM ..);
+First method is the most performant.
+
+If a table has interleaved sort keys the assumption is that not much of the data (sort key column values) change after the initial COPY load. Because the zone map is set during COPY. If it does change, interleaved sort keys are useless and you should be prepared to do VACUUM REINDEX to make it useful again. If VACUUM REINDEX - which is a very expensive operation - isn't possible and DML after initial load is the norm, do not set interleaved sort keys on that table.
+
+Redshift Backup and Recovery:
+
+Automatic snapshot:
+By default Redshift snapshots are retained for 1 day. You can change retention to go up to 35 days
+By default snapshots are taken every 8 hours or every 5GB of changes whichever happens first.
+
+You can also manually take a snapshot, this is called manual snapshot.
+
+To exclude a table from snapshot, include the clause BACKUP NO in CREATE TABLE DDL.
+
+If you set Cross-Region Snapshot to Yes (and specify the target region), all subsequent Auto and Manual snapshots will be copied to that region. Remember Redshift cluster is single AZ.
+Clusters encrypted using KMS can be set to do cross-region snapshots as well. This is done using Snapshot Copy Grant in the new region.
+
+Restoring:
+
+Restoring from Snapshot (by clicking on Restore on Console) will create a new cluster with the same configuration as original.
+A table alone can be restored from Snapshot. Table Restore need you to specify table name, schema name, db name of source (snapshot) and target (existing cluster).
+
+Monitoring can be done using Cloudwatch. Separate dashboards for queries, loads etc.
+
+Data Lake using Spectrum/Athena:
+
+Using Redshift Spectrum you can query S3 or other data sources using SQL.
+To do this first load your data in S3 (or another data source).
+Then define metadata about that data into your Redshift cluster using CREATE EXTERNAL SCHEMA SQL command. This will register S3 data in Redshift catalog and you can start issuing SQL. You can also use external schema defined on Hive Metastore - Spectrum is compatible with Hive Metastore.
+To see external tables: SVV_EXTERNAL_TABLES
+
+Athena vs Spectrum:
+
+Athena is the simplest way to give any employee ability to run queries on S3 data
+Used for interactive querying
+Anybody with SQL knowledge can query
+it’s serverless, no infrastructure (compute/storage) needed.
+
+Spectrum is used in conjunction with Redshift when you need to:
+Frequently access data,
+Have a lot of structured data,
+Have a data lake in conjunction with Redshift,
+Have flexibility in independently scaling out compute and/or storage, and
+Have multiple clusters (one for reporting, one for data science etc) access same data source.
+
+Spectrum supports GZIP and SNAPPY for compression
+
+Glue:
+
+ETL tool that generates code automatically in PySpark (Python API for Spark)
+Glue Crawler scans data sources and identifies schema on it’s own
+Glue Data Catalog can act as an integrated Data Lake catalog to be used with Athena and Spectrum.
+It’s batch based though micro-batching is possible, as small as 5 min intervals. No real time streaming though.
+Serverless, so no provisioning needed.
+
+Data Pipeline on the other hand is used when you need:
+provisioning flexibility (compute/storage)
+to run your own code (not Python)
+a non-Spark architecture (Hive, Pig etc.)
+
+Machine Learning:
+
+Confusion Matrix:
+TP FP
+FN TN
+
+AWS ML for predictive analytics uses logistic regression
+
+ML accepts 3 data sources:
+One or more files in S3
+Results of a Redshift query
+Results of an RDS MySQL query
+All other data sources can export it to S3 as csv (another FAQ section says Redshift and RDS goes to S3 as well before ML reads it)
+
+ML stops processing if dataset is found to have 10,000 or 10% erroneous data values, whichever comes first. (missing values, incompatible data types etc.)
+
+Binary Classification:
+
+Accuracy is represented using AUC (Area Under Curve). Values between 0 and 1. Value of 0.5 is baseline. 
+Performance is measured using values 0 through 1. If you set cut off value for Performance to too high (closer to 1) then it will help reducing FP and FN observations but in the process it will also reduce some TP and TN.
+Any observation (records) below cut off value is predicted as 0, anything above is 1 in binary classification. Understand the histogram in Binary Classification video at 04:56.
+
+F1 score represents accuracy of a multi-class prediction.
+F1 score is the (weighted) average of all classes where each class’s accuracy is calculated the same way as Binary Classification.
+Prediction is done by assigning score to each label (class). The class with highest score is the predicted result.
+
+Regression:
+
+Performance is measured using RMSE. Observations with lower RMSE than RMSE baseline value is considered positive (good).
+AWS uses RMSE to calculate Residuals (difference between actual value and predicted value) in a regression model.
+If the model is good, the residual form a bell curve/normal distribution and the centre of bell curve being 0 (such that sums from either sides cancel out). 
+If bell curve lies below (to the left of) zero, the most/all residuals are negative, that is the model underpredicted (prediction < target).
+If bell curve lies above (to the right of) zero, the model overpredicted.
+So the bell curve should be centered at 0 for a good model that’s not over/under predicted.
+
+Binary ML model creation:
+Select a data source, like S3, that has data values (observations)
+Select a target value from data source. This is the column value that ML is supposed predict given a different set of data values and data source. If the target column has binary values (example: income <= 50K and income > 50K) AWS ML will automatically choose Binary Classification algorithm. If not it will chose multiclass.
+Check the AUC for accuracy.
+Check the histogram for performance, adjust cut-off if need be. Overlapping areas are False positives and False negatives
+
+Above methods (cut off, residual analysis, F1) are more aligned with business needs. For ex, a business might be tolerant about False Positives but cannot accept False Negatives, and above methods will help.
+But before applying above methods, there are internal Model tuning methods like:
+Provide data as accurate as possible
+Transform data if needed
+Target sizing of model
+Number of passes to be made over data
+Type/Amount of Regularization to be applied
+
+You cannot export models out of Amazon ML
+You cannot import models into Amazon ML
+To get prediction results out to your applications use:
+Batch API (for bulk data records)
+Real time API (for mobile/real time apps)
+Limits: 5 batch jobs, 200 real time requests through ML URL endpoint. Both can be increased by contacting Customer Care.
+
+Monitoring:
+Batch and real time volume can be monitored using CloudWatch.
+To monitor model quality, you'd take a sample of input data and ask ML to evaluate it (remember the original steps: training, evaluation, get prediction - each given mutually exclusive datasets as input).
+Retrain with new data points (that reflect current reality) if quality of model dropped.
+
+
+
+
+Quicksight (Visualization):
+
+Supported datasources:
+DB: Redshift, Aurora, Athena, RDS (MariaDB 10.0, SQLServer 2012, MySQL 5.1, PostgreSQL 9.3.1
+Files (S3 or OnPrem): Excel, CSV and TSV, Common Log Format (.clf), Extended Log Format (.elf)
+Reports as objects: Salesforce
+
+SPICE is the engine that processes datasets (Superfast Parallel In-memory Calculation Engine)
+Each accounts will get 10 GB per user in that account.
+
+Standard Edition:
+Invite users using their email id or IAM user (if they are on IAM). When you send them an email (through Quicksight UI) you have the option to chose whether they are Admin or User.
+Users get an email with login URL
+When you delete the user, you can either transfer the resources created by this user to the ownership of another user or delete the orphaned resources.
+Enterprise Edition
+Added through Microsoft AD groups in AWS Directory Services.
+In EE users don’t get an automated email, so you have to manually email them with login URL and credentials.
+Data Source → apply Transformations → Datasets → Create Analyses → Create Visualizations/Stories/Dashboards
+Three main components of Quicksight output are Visuals/Stories/Dashboards
+
+20 Visuals per Analysis are allowed. Analysis is what you do on SPICE dataset to make Visuals.
+Type of Visuals:
+Bar chart - Horizontal:
+Single measure - one measure for a dimension
+Multi measure - two or more measures for a dimension
+Clustered - values of a dimension grouped by related dimensions
+Horizontal bar chart has dimensions on Y axis.
+Bar chart - Vertical
+<same as above> except Dimensions are on X axis
+Line charts (line graphs)
+Area Line chart (same as above with colored areas between lines instead of just lines)
+Pivot tables (tabular representation of data by clustering, that is grouping by dimensions and then sub-grouping etc)
+Scatter plot
+Tree map (represent hierarchical data in the form of nested rectangles)
+Pie chart
+Heat map (helps identify trends and outliers with a color scheme)
+
+Story creates a scene by scene narrative of visuals. This is helpful to show changes, how changing/adding/removing dimensions affect the visuals etc. by playing the scenes one by one. You can use the same visuals in a different scene by applying a different filter (dimension).
+
+Dashboard is a read-only snapshot of an Analysis (that is a bunch of visuals). While creating dashboard you email the users who you want to access the dashboard. 
+
+
+Zeppelin:
+
+It’s a notebook (IDE) that you can use to collaborate with other developers for data analysis and other programming tasks.
+Supports Scala, Python, Spark SQL, Hive QL
+To save any notebooks that are shared with you into S3, specify the bucket name at “Enter Configuration” section of EMR set up or specify the configuration as a JSON file stored in S3.
+
+Use cases: 
+Zeppelin+Spark SQL+MLlib on EMR used for exploratory data analysis and for recommendation engines
+Zeppelin+Kinesis Streams+Spark Streams for analysis for real time data
+
+Jupyter:
+
+It’s a notebook like Zeppelin but more popular and supports upto 40 programming languages.
+To install Jupyter on EMR, specify a custom Bootstrap Action in the EMR launch config screen. Bootstrap Action specifies additional software to be launched when EMR cluster is launching (bootstrapping). Zeppelin is also launched internally as a Bootstrap Action but since AWS directly supports it, it is available as a checkbox option along with HUE, Hive etc.
+
+Spark users are lenient to Zeppelin.
+Python users are lenient to Jupyter
+But both Notebooks support both languages among others.
+
+D3.js:
+
+Javascript library for visualizations in browsers
+Read in data from csv, tsv or json files
+Produce html tables, SVG bar charts, interactive graphs etc. in a browser
+
+
+Security on EMR:
+
+There are two types of Security Groups in EMR:
+	EMR managed security groups
+	Additional security groups
+EMR managed security groups are updated for inbound/outbound rules automatically. You can choose the default mgd security group or select a custom security group under EMR managed security groups. Either of them that you select will be auto updated by EMR.
+If you want to have your own custom inbound/outbound rules (like SSH) you can configure Additional Security Group. This won’t be auto-updated.
+
+3 default Roles when you launch EMR cluster:
+EMR_DefaultRole - helps EMR access EC2 instances that they are running on.
+EMR_EC2_DefaultRole - helps EMR access S3, CloudWatch and other essential AWS services
+EMR_Autoscaling_DefaultRole - helps EMR scale up and scale down nodes
+
+If you choose a private subnet for your EMR VPC (instead of a public subnet), you will need an S3 endpoint for S3 access. To access other services from a private subnet like DynamoDB, KMS and Kinesis you’ll need to configure a NAT instance to route traffic.
+
+EMRFS to S3 encryption (in-transit) uses TLS protocol.
+For data at rest encryption on EMR, there is open source HDFS encryption and LUKS (Linux Unified Key Setup). There is also server-side and client-side encryption for S3 namely SSE-S3, SSE-KMS, CSE-KMS, CSE-Custom key.
+
+To set up encryption at rest on EMR:
+Add an Inline Policy for KMS (if you choose KMS) to the EC2 Role - this is true for the default EC2 Role as well as the custom EC2 Role if you added that.
+Go to Security Configurations tab on EMR and create a new security configuration
+Select an at-rest encryption mode for:
+S3
+Local disk
+If you choose SSE-KMS for S3, the Master key is stored in S3 KMS.
+If you want to encrypt data before sending to S3, use CSE KMS
+If you want to encrypt data before sending to S3 and also want to manage the key yourself, use CSE-Custom.
+In the above CSE-Custom option, you have to specify a .jar file in S3 that implements the custom key provider algorithm. You would also mention the name of the class that implements the key provider.
+Local disk encryption setup is used to encrypt EBS volumes or instance store volumes in EMR cluster
+EMR updates these Security Configurations in two config files in master node:
+core-site.xml
+hdfs-site.xml
+EMR Security Configuration will apply to Hadoop, Spark and Tez
+Select an in-transit encryption:
+Uses TLS
+Select a TLS certificate provider type, this is usually PEM. If you choose Custom instead of PEM, select the jar file on S3 and specify the name of the class in jar file that implements this.
+In production, use a Trusted Certificate Authority’s certificate, not a self signed certificate
+SSL/TLS encryption is also used if you want Shuffle encryption (Shuffle is when map jobs sent all the Reduce datasets to appropriate data nodes for Reduce). Two files get updated for Hadoop Encrypted Shuffle:
+core-site.xml (has SSL key store information). For Tez, it’s tez-site.xml
+mapred-site.xml
+The mapred user should own these two files:
+ssl-server.xml
+ssl-client.xml
+
+For Spark, security config files are used for both authentication and transit security. The file name is spark-defaults.conf.
+
+
+
+Redshift Security:
+
+In-transit encryption:
+Redshift uses SSL for in-transit encryption (not TLS).
+This is only used for encrypting the connection between your SQL client (application client) to the Redshift cluster (not for node to node connection)
+This is set up in Parameter Groups so you need to create a custom Parameter Group because Default Parameter Group can’t be changed.
+
+At-rest encryption:
+Two ways: KMS & HSM
+Hardware Security Module (HSM) can be on-premise or on Cloud.
+Data blocks, system metadata and snapshots are all encrypted
+Encryption at rest is immutable. The only way to turn it off is by loading decrypted data to a new cluster.
+
+KMS:
+Involves a 4-tier encryption key hierarchy in the below order of precedence, however the chronological order of encryption starts from the bottom up:
+Master key
+Cluster encryption key
+Database encryption key
+Data encryption keys
+This is the encryption process:
+You chose a Customer Master key on AWS Console while setting up cluster. Choose either a default one from AWS or the one you created (CMK). If you don’t want default Master Key from KMS, you must have created CMK before launching Redshift cluster. This is a one-time setup.
+Redshift requests KMS to randomly generate AES-256  data key. Data key is then encrypted using Master key. This data key is used as the Cluster Encryption key. KMS exports encrypted CEK to Redshift. 
+Encrypted CEK is stored on disk in a different network from the cluster. Note that CMK stays in the KMS and is not exported to Redshift.
+Redshift randomly generate a Database Encryption Key. To encrypt DEK, the below step is requested.
+The encrypted CEK is transported to Redshift cluster memory securely (from disk on the other network). Redshift calls KMS to decrypt CEK and loads decrypted CEK to memory.
+DEK is then encrypted using decrypted CEK. Both encrypted and decrypted version of both DEK and CEK are stored in memory.
+Decrypted DEK is used to encrypt individual data blocks.
+
+Who creates what in above steps?
+CMK - created by KMS or user at cluster creation
+Data key - created by KMS
+Cluster key - same as Data key
+DEK - created by Redshift cluster
+
+This is the decryption process:
+Redshift requests the encrypted version of CEK and DEK stored on disk in a separate network.
+Redshift requests KMS to decrypt CEK using CMK. Then the DEK is decrypted using CEK. Both encrypted and decrypted versions of both DEK and CEK are stored in memory.
+The decrypted DEK is then used to decrypt data block keys as needed for user operations.
+
+HSM:
+Physical devices that safeguard and manage keys.
+Need to set up and HSM Connection between the cluster and HSM device, in order to pass keys back and forth.
+
+Get HSM Public certificate
+Establish HSM Connection
+Create HSM Client certificate
+Download Public Key into (or upload it into) HSM device
+Launch Redshift cluster, specify the HSM Connection and HSM Client Certificate
+
+Difference between HSM and KMS processes (encryption):
+HMS doesn’t export encrypted CEK to Redshift. CEK stays on HSM.
+Just like KMS, Redshift cluster randomly generates DEK . But unlike KMS, DEK is exported to HSM (in order to encrypt it using CEK).
+DEK is double encrypted. The second encryption happens when HSM exports encrypted DEK to Redshift and Redshift generates an internal master key (that’s saved on disk on a separate network) to encrypt DEK further.
+Encrypted and decrypted versions of DEK are stored in memory. Decrypted version is used to encrypt and decrypt individual data blocks.
+
+Difference between HSM and KMS processes (decryption):
+Redshift uses Internal master key (stored in separate network) to decrypt the double-encrypted DEK one step down.
+CEK-encrypted DEK is then sent to HSM to completely unencrypt DEK using CEK.
+Redshift receives unencrypted DEK and is used to decrypt data blocks upon user requests.
+
+Other differences:
+HSM - Costly. Upfront payments. KMS - Pay per usage
+HSM - High Availability has to be configured by the user (redundant HSM devices etc). KMS - HA is built in by AWS
+HSM - Single tenant. KMS - Multi tenant
+HMS - User manage the root of trust. KMS - AWS manages the root of trust.
+HMS - designed to comply with US regulatory requirements. KMS - designed just to comply with auditing requirements, don’t necessarily comply.
+HMS - supports symmetric and asymmetric encryption (see below). KMS - only symmetric encryption.
+Symmetric encryption is when you use the same key for encryption and decryption both. For example, the access key and secret key pair generated when you create an IAM user.
+Asymmetric encryption is when you use a public key for encryption and a private key only known to client for decryption. An example is the key pair (which is your own private key) that you use to login to EC2. AWS has the public key in this case.
